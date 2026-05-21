@@ -1,26 +1,26 @@
-name: PDF OCR and Release
+name: Advanced PDF OCR (EasyOCR)
 
 on:
   push:
     paths:
-      - '**/*.pdf' # Triggers automatically when a PDF is pushed
-  workflow_dispatch: # Allows you to run it manually from the Actions tab
+      - '**/*.pdf'
+  workflow_dispatch:
 
 jobs:
   ocr-process:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to create a GitHub Release
+      contents: write
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install System Dependencies (Tesseract & Poppler)
-        # Installs Tesseract, Poppler (for PDF to image conversion), and language packs
+      - name: Install System Dependencies (Poppler)
+        # Poppler is still required to convert PDFs to images
         run: |
           sudo apt-get update
-          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-fas tesseract-ocr-ara
+          sudo apt-get install -y poppler-utils
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,41 +28,52 @@ jobs:
           python-version: '3.10'
 
       - name: Install Python Dependencies
-        run: pip install pdf2image pytesseract
+        # Installing CPU version of PyTorch to save time/space on GitHub Runners, plus EasyOCR
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install pdf2image easyocr opencv-python-headless numpy
 
-      - name: Run OCR Script
-        # Inline Python script to find PDFs, convert to images, OCR with mixed languages, and format output
+      - name: Run Advanced OCR Script
         run: |
           python -c "
           import os
           import glob
+          import numpy as np
+          import easyocr
           from pdf2image import convert_from_path
-          import pytesseract
 
-          # Find all PDFs in the repository
           pdf_files = glob.glob('**/*.pdf', recursive=True)
-          
           if not pdf_files:
               print('No PDF files found.')
               exit(0)
+
+          # Initialize the EasyOCR reader with Persian, Arabic, and English
+          # gpu=False because standard GitHub Action runners do not have GPUs
+          print('Downloading OCR models (this happens once per run)...')
+          reader = easyocr.Reader(['fa', 'ar', 'en'], gpu=False)
 
           for pdf in pdf_files:
               print(f'Processing: {pdf}')
               base_name = os.path.splitext(os.path.basename(pdf))[0]
               txt_filename = f'{base_name}_ocr_result.txt'
               
-              # Convert PDF pages to images
               pages = convert_from_path(pdf)
               
               with open(txt_filename, 'w', encoding='utf-8') as f:
                   for i, page in enumerate(pages):
                       print(f'  OCR on page {i + 1}...')
-                      # OCR combining Persian, Arabic, and English
-                      text = pytesseract.image_to_string(page, lang='fas+ara+eng')
                       
-                      # Write the template format: Page Number then Contents
+                      # EasyOCR requires numpy arrays instead of raw PIL images
+                      img_array = np.array(page)
+                      
+                      # paragraph=True forces the AI to group mixed text lines logically
+                      results = reader.readtext(img_array, paragraph=True)
+                      
+                      # Extract just the text from the result list
+                      extracted_text = '\n'.join([res[1] for res in results])
+                      
                       f.write(f'Page {i + 1}\n')
-                      f.write(text)
+                      f.write(extracted_text)
                       f.write('\n\n')
               
               print(f'Finished processing {pdf}. Saved to {txt_filename}')
@@ -72,8 +83,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ocr-run-${{ github.run_id }}
-          name: "OCR Results: Run ${{ github.run_id }}"
-          body: "Automated OCR extraction for newly added or updated PDFs."
+          name: "EasyOCR Results: Run ${{ github.run_id }}"
+          body: "Advanced ML-based OCR extraction for PDFs."
           files: '*_ocr_result.txt'
           draft: false
           prerelease: false
